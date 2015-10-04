@@ -248,6 +248,7 @@ Function RunAsScheduledJob
         $Contents = get-content $ScriptFileName
         $FirstLine = 'Set-Variable -scope Global -name IsScheduledJob -value $true'
         $SecondLine = "Set-Variable -scope Global -name OriginalScriptFile -value $Currentfilename"
+        Set-Variable -Scope global -Name IsScheduledJob -Value $false
         Set-content $ScriptFileName -Value $FirstLine,$SecondLine,$Contents -Force
         
         if (test-path "$CurrentFOlder\scheduledjoboutput.json")
