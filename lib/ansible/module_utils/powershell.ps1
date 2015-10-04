@@ -239,7 +239,15 @@ Function RunAsScheduledJob
     }
     Else
     {
-        
+        #Get RunasCreds if they exist
+        $params = Parse-Args $args;
+        $runasusername = Get-AnsibleParam -obj $params -name "runas_user"
+        if ($runasusername -ne $null)
+        {
+            $runaspassword = Get-AnsibleParam -obj $params -name "runas_password"
+            $runascred = new-object -typename System.Management.Automation.PSCredential -argumentlist $runasusername, $runaspassword
+        }
+
         $Currentfilename = $PSCommandPath
         $CurrentFOlder = (Get-item $PSCommandPath).Directory
         $CurrentFileBaseName = (get-item $PSCommandPath).BaseName
@@ -272,7 +280,18 @@ Function RunAsScheduledJob
         }
         #Register it
         set-content "$CurrentFOlder\Jobname.txt" -Value $CurrentFileBaseName
-        Register-ScheduledJob -FilePath $ScriptFileName -Name $CurrentFileBaseName -RunNow | out-null
+
+        $RegisterParams = @{
+            FilePath = $ScriptFileName;
+            Name = $CurrentFileBaseName;
+        }
+
+        #If credentials specified, att to the splatting hashtable
+        if ($runascred)
+        {
+            $RegisterParams.Add("Credential",$runascred)
+        }
+        Register-ScheduledJob @registerparams -RunNow | out-null
 
         
         #start-scheduledtask "$CurrentFileBaseName" | out-null
