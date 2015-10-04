@@ -329,15 +329,16 @@ Function GetScheduledJobResult
     $myobj = "" | Select Obj,Result
     $myobj.obj = $jobinfo.Output | ConvertFrom-Json
 
-    if (($taskinfo.LastTaskResult) -eq 1)
-    {
-        #Job Failed
-        $myobj.Result = "Failed"
-    }
-    Elseif (($taskinfo.LastTaskResult) -eq 0)
+
+    If (($taskinfo.LastTaskResult) -eq 0)
     {
         #Job Failed
         $myobj.Result = "Success"
+    }
+    Else
+    {
+        #Job Failed
+        $myobj.Result = "Failed"
     }
 
     $myobj
