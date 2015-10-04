@@ -92,7 +92,10 @@ Function Fail-Json($obj, $message = $null)
         $obj = New-Object psobject
     }
 
-    Set-Attr $obj "msg" $message
+    if (!(Get-AnsibleParam -obj $obj -name "msg"))
+    {
+        Set-Attr $obj "msg" $message
+    }
     Set-Attr $obj "failed" $true
     echo $obj | ConvertTo-Json -Compress -Depth 99
     Exit 1
@@ -224,4 +227,107 @@ Function Get-FileChecksum($path)
         $hash = "1";
     }
     return $hash
+}
+
+Function RunAsScheduledJob
+{
+    Param ([System.Management.Automation.PSCredential]$Credential)
+
+    if ((Get-Variable -Name IsScheduledJob -ValueOnly -ErrorAction SilentlyContinue) -eq $true)
+    {
+        #we're already running as a scheduled task
+    }
+    Else
+    {
+        
+        $Currentfilename = $PSCommandPath
+        $CurrentFOlder = (Get-item $PSCommandPath).Directory
+        $CurrentFileBaseName = (get-item $PSCommandPath).BaseName
+        $ScriptFileName = Join-Path $CurrentFOlder "ScheduledTask.ps1"
+        Copy-item $Currentfilename -Destination $ScriptFileName -Force
+        $Contents = get-content $ScriptFileName
+        $FirstLine = 'Set-Variable -scope Global -name IsScheduledJob -value $true'
+        $SecondLine = "Set-Variable -scope Global -name OriginalScriptFile -value $Currentfilename"
+        Set-content $ScriptFileName -Value $FirstLine,$SecondLine,$Contents -Force
+        
+        if (test-path "$CurrentFOlder\scheduledjoboutput.json")
+        {
+            remove-item "$CurrentFOlder\scheduledjoboutput.json"
+        }
+
+        #Configure the task runner
+        #$action = New-ScheduledTaskAction -Execute "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-executionpolicy bypass -command $ScriptFileName >> $CurrentFOlder\scheduledtaskoutput.json"
+        #$trigger = New-ScheduledTaskTrigger -At (get-date).AddMilliseconds(1000) -Once
+        #$taskuser = "$env:USERDOMAIN\$env:USERNAME"
+        #$S = New-ScheduledTaskSettingsSet
+
+        #$trigger = New-JobTrigger -At (get-date).AddMilliseconds(100) -Once
+        
+        #Force PS to clean up jobs
+        Get-ScheduledJob -ErrorAction SilentlyContinue | out-null
+        if (Get-ScheduledJob -Name $CurrentFileBaseName  -ErrorAction SilentlyContinue)
+        {
+            Unregister-ScheduledJob -Name $CurrentFileBaseName -Force
+        }
+        #Register it
+        set-content "$CurrentFOlder\Jobname.txt" -Value $CurrentFileBaseName
+        Register-ScheduledJob -FilePath $ScriptFileName -Name $CurrentFileBaseName -RunNow | out-null
+
+        
+        #start-scheduledtask "$CurrentFileBaseName" | out-null
+        $counter = 0
+        Do {
+            $jobfailed = $false
+            $jobfinished = $false
+            start-sleep -Milliseconds 1000
+            $thisjob = get-job -Name $CurrentFileBaseName -Newest 1 -ErrorAction SilentlyContinue
+            $counter ++
+            if ((!$thisjob) -and ($counter -gt 5))
+            {
+                $jobfailed = $true
+                $jobfinished = $true
+            }
+            Elseif ($thisjob -and ($thisjob.State -eq "Completed"))
+            {
+                $jobfailed = $false
+                $jobfinished = $true
+            }
+        }
+        Until ($jobfinished -eq $true)
+        #
+        if ($jobfailed -eq $true)
+        {
+            fail-json -message "unable to start/register scheduled job $CurrentFileBaseName"
+        }
+        else
+        {
+            #Job completed. move on
+        }
+    }
+}
+
+Function GetScheduledJobResult
+{
+    #Get the job name
+    $CurrentFOlder = (Get-item $PSCommandPath).Directory
+    $jobname = get-content "$CurrentFOlder\Jobname.txt"
+    $jobinfo = Get-job -Name $jobname
+    $taskinfo = get-scheduledTaskInfo -TaskName $jobname -TaskPath "\Microsoft\Windows\PowerShell\ScheduledJobs\"
+    unregister-ScheduledJob $jobname -confirm:$false -ErrorAction SilentlyContinue
+    
+    $myobj = "" | Select Obj,Result
+    $myobj.obj = $jobinfo.Output | ConvertFrom-Json
+
+    if (($taskinfo.LastTaskResult) -eq 1)
+    {
+        #Job Failed
+        $myobj.Result = "Failed"
+    }
+    Elseif (($taskinfo.LastTaskResult) -eq 0)
+    {
+        #Job Failed
+        $myobj.Result = "Success"
+    }
+
+    $myobj
 }
