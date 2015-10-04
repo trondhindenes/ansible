@@ -290,7 +290,7 @@ Function RunAsScheduledJob
         Do {
             $jobfailed = $false
             $jobfinished = $false
-            start-sleep -Milliseconds 1000
+            if ($counter -gt 0) {start-sleep -Milliseconds 1000}
             $thisjob = get-job -Name $CurrentFileBaseName -Newest 1 -ErrorAction SilentlyContinue
             $counter ++
             if ((!$thisjob) -and ($counter -gt 5))
@@ -303,12 +303,17 @@ Function RunAsScheduledJob
                 $jobfailed = $false
                 $jobfinished = $true
             }
+            Elseif ($thisjob -and ($thisjob.State -eq "Failed"))
+            {
+                $jobfailed = $true
+                $jobfinished = $true
+            }
         }
         Until ($jobfinished -eq $true)
         #
         if ($jobfailed -eq $true)
         {
-            fail-json -message "unable to start/register scheduled job $CurrentFileBaseName"
+            fail-json -message "Error when executing scheduled job $CurrentFileBaseName"
         }
         else
         {
