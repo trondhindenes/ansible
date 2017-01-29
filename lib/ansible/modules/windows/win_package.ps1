@@ -322,11 +322,9 @@ function Test-TargetResource
         [string] $Name,
         
         [parameter(Mandatory = $false)]
-        [ValidateNotNullOrEmpty()]
         [string] $Path,
         
         [parameter(Mandatory = $true)]
-        [AllowEmptyString()]
         [string] $ProductId,
         
         [string] $Arguments,
@@ -346,6 +344,17 @@ function Test-TargetResource
         [string] $InstalledCheckRegValueData
     )
     
+    if ([String]::IsNullOrEmpty($Path))
+    {
+        $Path = $null
+    }
+
+    if ([String]::IsNullOrEmpty($ProductId))
+    {
+        $ProductId = $null
+    }
+
+
     $uri, $identifyingNumber = Validate-StandardArguments $Path $ProductId $Name
     if (($ProductId -eq "auto") -and ($null -ne $path))
     {
@@ -429,11 +438,9 @@ function Get-TargetResource
         [string] $Name,
         
         [parameter(Mandatory = $false)]
-        [ValidateNotNullOrEmpty()]
         [string] $Path,
         
-        [parameter(Mandatory = $true)]
-        [AllowEmptyString()]
+        [parameter(Mandatory = $false)]
         [string] $ProductId,
 
         [string] $InstalledCheckRegKey,
@@ -442,7 +449,17 @@ function Get-TargetResource
 
         [string] $InstalledCheckRegValueData
     )
-    
+
+    if ([String]::IsNullOrEmpty($Path))
+    {
+        $Path = $null
+    }
+
+    if ([String]::IsNullOrEmpty($ProductId))
+    {
+        $ProductId = $null
+    }
+
     #If the user gave the ProductId then we derive $identifyingNumber
     $uri, $identifyingNumber = Validate-StandardArguments $Path $ProductId $Name
     if (($ProductId -eq "auto") -and ($null -ne $path))
@@ -725,11 +742,9 @@ function Set-TargetResource
         [string] $Name,
         
         [parameter(Mandatory = $false)]
-        [ValidateNotNullOrEmpty()]
         [string] $Path,
         
-        [parameter(Mandatory = $true)]
-        [AllowEmptyString()]
+        [parameter(Mandatory = $false)]
         [string] $ProductId,
         
         [string] $Arguments,
@@ -750,13 +765,25 @@ function Set-TargetResource
     )
     
     $ErrorActionPreference = "Stop"
+    $PathIsNull = $False
+    if ([String]::IsNullOrEmpty($Path))
+    {
+        $Path = $null
+        $PathIsNull = $true
+    }
+
+    if ([String]::IsNullOrEmpty($ProductId))
+    {
+        $ProductId = $null
+    }
+
     $PackageAlreadyDownloaded = $False
     if (Get-Variable -scope Script -name DownloadedPackage -ErrorAction SilentlyContinue)
     {
         $Path = $Script:DownloadedPackage
         $PackageAlreadyDownloaded = $True
     }
-    if ($null -eq $path)
+    if ($PathIsNull -and $Ensure -eq "Present")
     {
         Throw-TerminatingError "Parameter path missing" $_
     }
@@ -794,7 +821,15 @@ function Set-TargetResource
     $downloadedFileName = $null
     try
     {
-        $fileExtension = [System.IO.Path]::GetExtension($Path).ToLower()
+        if ($PathIsNull -eq $False)
+        {
+            $fileExtension = [System.IO.Path]::GetExtension($Path).ToLower()
+        }
+        else {
+            #mock msi if path wasn't specified
+            $fileExtension = ".msi"
+        }
+        
         if($LogPath)
         {
             try
@@ -840,7 +875,9 @@ function Set-TargetResource
         }
         
         #At this point the Path ought to be valid unless it's an MSI uninstall case
-        if(-not (Test-Path -PathType Leaf $Path) -and -not ($Ensure -eq "Absent" -and $fileExtension -eq ".msi"))
+        if (($Ensure -eq "Absent") -and ($fileExtension -eq ".msi"))
+        {}
+        elseif(-not (Test-Path -PathType Leaf $Path))
         {
             Throw-TerminatingError ($LocalizedData.PathDoesNotExist -f $Path)
         }
@@ -1378,12 +1415,12 @@ $dscparams = @{
     returncode = $return_code
 }
 
-if ($productid)
+if (($productid) -and ($productid.length -gt 0))
 {
     $dscparams.add("productid", $productid)
 }
 
-if ($path)
+if (($path) -and ($path.length -gt 0))
 {
     $dscparams.add("path", $path)
 }
