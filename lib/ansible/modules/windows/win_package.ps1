@@ -158,29 +158,31 @@ Function Validate-StandardArguments
         $ProductId,
         $Name
     )
-    
-    Trace-Message "Validate-StandardArguments, Path was $Path"
     $uri = $null
-    try
+    if ($path)
     {
-        $uri = [uri] $Path
-    }
-    catch
-    {
-        Throw-InvalidArgumentException ($LocalizedData.InvalidPath -f $Path) "Path"
-    }
-    
-    if(-not @("file", "http", "https") -contains $uri.Scheme)
-    {
-        Trace-Message "The uri scheme was $uri.Scheme"
-        Throw-InvalidArgumentException ($LocalizedData.InvalidPath -f $Path) "Path"
-    }
-    
-    $pathExt = [System.IO.Path]::GetExtension($Path)
-    Trace-Message "The path extension was $pathExt"
-    if(-not @(".msi",".exe") -contains $pathExt.ToLower())
-    {
-        Throw-InvalidArgumentException ($LocalizedData.InvalidBinaryType -f $Path) "Path"
+        Trace-Message "Validate-StandardArguments, Path was $Path"
+        try
+        {
+            $uri = [uri] $Path
+        }
+        catch
+        {
+            Throw-InvalidArgumentException ($LocalizedData.InvalidPath -f $Path) "Path"
+        }
+        
+        if(-not @("file", "http", "https") -contains $uri.Scheme)
+        {
+            Trace-Message "The uri scheme was $uri.Scheme"
+            Throw-InvalidArgumentException ($LocalizedData.InvalidPath -f $Path) "Path"
+        }
+        
+        $pathExt = [System.IO.Path]::GetExtension($Path)
+        Trace-Message "The path extension was $pathExt"
+        if(-not @(".msi",".exe") -contains $pathExt.ToLower())
+        {
+            Throw-InvalidArgumentException ($LocalizedData.InvalidBinaryType -f $Path) "Path"
+        }
     }
     
     $identifyingNumber = $null
@@ -282,6 +284,19 @@ Function Get-ProductEntry
     return $null
 }
 
+Function Get-ProductId
+{
+    Param (
+        $PackageUri
+    )
+
+    #Only works on local packages for now
+    $pn, $pc = Get-MsiProductEntry -Path $PackageUri.OriginalString
+    #Return product code
+    return $pc
+}
+
+
 function Test-TargetResource 
 {
     param
@@ -293,7 +308,7 @@ function Test-TargetResource
         [AllowEmptyString()]
         [string] $Name,
         
-        [parameter(Mandatory = $true)]
+        [parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
         [string] $Path,
         
@@ -319,6 +334,12 @@ function Test-TargetResource
     )
     
     $uri, $identifyingNumber = Validate-StandardArguments $Path $ProductId $Name
+    if (($ProductId -eq "auto") -and ($null -ne $path))
+    {
+        #Attempt to get product id from msi
+        $identifyingNumber = Get-ProductId -PackageUri $uri
+    }
+
     $product = Get-ProductEntry $Name $identifyingNumber $InstalledCheckRegKey $InstalledCheckRegValueName $InstalledCheckRegValueData
     Trace-Message "Ensure is $Ensure"
     if($product)
@@ -389,7 +410,7 @@ function Get-TargetResource
         [AllowEmptyString()]
         [string] $Name,
         
-        [parameter(Mandatory = $true)]
+        [parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
         [string] $Path,
         
@@ -406,7 +427,11 @@ function Get-TargetResource
     
     #If the user gave the ProductId then we derive $identifyingNumber
     $uri, $identifyingNumber = Validate-StandardArguments $Path $ProductId $Name
-    
+    if (($ProductId -eq "auto") -and ($null -ne $path))
+    {
+        #Attempt to get product id from msi
+        $identifyingNumber = Get-ProductId -PackageUri $uri
+    }
     $localMsi = $uri.IsFile -and -not $uri.IsUnc
     
     $product = Get-ProductEntry $Name $identifyingNumber $InstalledCheckRegKey $InstalledCheckRegValueName $InstalledCheckRegValueData
@@ -483,7 +508,7 @@ function Get-TargetResource
 
 Function Get-MsiTools
 {
-    if($script:MsiTools)
+    if(get-variable -Scope script -Name msitools -ErrorAction SilentlyContinue)
     {
         return $script:MsiTools
     }
@@ -572,7 +597,7 @@ function Set-TargetResource
         [AllowEmptyString()]
         [string] $Name,
         
-        [parameter(Mandatory = $true)]
+        [parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
         [string] $Path,
         
@@ -599,6 +624,11 @@ function Set-TargetResource
     
     $ErrorActionPreference = "Stop"
     
+    if ($null -eq $path)
+    {
+        Throw-TerminatingError "Parameter path missing" $_
+    }
+
     if((Test-TargetResource -Ensure $Ensure -Name $Name -Path $Path -ProductId $ProductId `
         -InstalledCheckRegKey $InstalledCheckRegKey -InstalledCheckRegValueName $InstalledCheckRegValueName `
         -InstalledCheckRegValueData $InstalledCheckRegValueData))
@@ -607,7 +637,11 @@ function Set-TargetResource
     }
 
     $uri, $identifyingNumber = Validate-StandardArguments $Path $ProductId $Name
-    
+    if (($ProductId -eq "auto") -and ($null -ne $path))
+    {
+        #Attempt to get product id from msi
+        $identifyingNumber = Get-ProductId -PackageUri $uri
+    }
     #Path gets overwritten in the download code path. Retain the user's original Path in case the install succeeded
     #but the named package wasn't present on the system afterward so we can give a better message
     $OrigPath = $Path
@@ -1257,13 +1291,13 @@ $params = Parse-Args $args;
 $result = New-Object psobject;
 Set-Attr $result "changed" $false;
 
-$path = Get-Attr -obj $params -name path -failifempty $true -resultobj $result
+$path = Get-Attr -obj $params -name path -failifempty $false
 $name = Get-Attr -obj $params -name name -default $path
-$productid = Get-Attr -obj $params -name productid
+$productid = Get-Attr -obj $params -name productid -failifempty $false
 if ($productid -eq $null)
 {
     #Alias added for backwards compat.
-    $productid = Get-Attr -obj $params -name product_id -failifempty $true -resultobj $result
+    $productid = Get-Attr -obj $params -name product_id -resultobj $result -failifempty $true
 }
 $arguments = Get-Attr -obj $params -name arguments
 $ensure = Get-Attr -obj $params -name state -default "present"
@@ -1275,14 +1309,28 @@ $username = Get-Attr -obj $params -name user_name
 $password = Get-Attr -obj $params -name user_password
 $return_code = Get-Attr -obj $params -name expected_return_code -default 0
 
+if (($ensure -eq "present") -and ($null -eq $path))
+{
+    #If "present", we need a package path
+    Fail-Json -obj $result -message 'parameter "path" is required when state is set to "present"'
+}
+
 #Construct the DSC param hashtable
 $dscparams = @{
     name=$name
-    path=$path
-    productid = $productid
     arguments = $arguments
     ensure = $ensure
     returncode = $return_code
+}
+
+if ($productid)
+{
+    $dscparams.add("productid", $productid)
+}
+
+if ($path)
+{
+    $dscparams.add("path", $path)
 }
 
 if (($username -ne $null) -and ($password -ne $null))
