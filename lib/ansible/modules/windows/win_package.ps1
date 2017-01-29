@@ -290,8 +290,21 @@ Function Get-ProductId
         $PackageUri
     )
 
-    #Only works on local packages for now
-    $pn, $pc = Get-MsiProductEntry -Path $PackageUri.OriginalString
+    if ($PackageUri.IsFile -eq $false)
+    {
+        $PackagePath = Invoke-DownloadFile $PackageUri
+    }
+    else {
+        $PackagePath = $PackageUri.OriginalString
+    }
+
+    $pn, $pc = Get-MsiProductEntry -Path $PackagePath
+    
+    #add the product code to global scope so that other functions can use it
+    if ($pc)
+    {
+        $Script:ProductCode = $pc
+    }
     #Return product code
     return $pc
 }
@@ -383,6 +396,11 @@ function Test-TargetResource
 
     }
     
+    #if we're unable to grab identifying number and state is absent, then always return false since we dont know the state
+    if (($null -eq $identifyingNumber ) -and ($Ensure -eq "Absent"))
+    {
+        $res = $False
+    }
     return $res
 }
 
@@ -580,8 +598,117 @@ Function Get-MsiProductEntry
     $pn = $tools::GetProductName($Path)
 
     $pc = $tools::GetProductCode($Path)
-
+    if ($null -eq $pc)
+    {
+        $Script:InvalidMsiFile = $true
+    }
     return $pn,$pc
+}
+
+Function Invoke-DownloadFile
+{
+    Param(
+        $Uri,
+        $Credential
+    )
+
+    if($uri.IsUnc -and $PSCmdlet.ShouldProcess($LocalizedData.MountSharePath, $null, $null))
+    {
+        $psdriveArgs = @{Name=([guid]::NewGuid());PSProvider="FileSystem";Root=(Split-Path $uri.LocalPath)}
+        if($Credential)
+        {
+            #We need to optionally include these and then splat the hash otherwise
+            #we pass a null for Credential which causes the cmdlet to pop a dialog up
+            $psdriveArgs["Credential"] = $Credential
+        }
+        
+        $psdrive = New-PSDrive @psdriveArgs
+        $Path = Join-Path $psdrive.Root (Split-Path -Leaf $uri.LocalPath) #Necessary?
+    }
+    elseif(@("http", "https") -contains $uri.Scheme -and $PSCmdlet.ShouldProcess($LocalizedData.DownloadHTTPFile, $null, $null))
+    {
+        $scheme = $uri.Scheme
+        $outStream = $null
+        $responseStream = $null
+
+        try
+        {
+            Trace-Message "Creating cache location"
+
+            if(-not (Test-Path -PathType Container $CacheLocation))
+            {
+                mkdir $CacheLocation | Out-Null
+            }
+        
+            $destName = Join-Path $CacheLocation (Split-Path -Leaf $uri.LocalPath)
+        
+            Trace-Message "Need to download file from $scheme, destination will be $destName"
+
+            try
+            {
+                Trace-Message "Creating the destination cache file"
+                $outStream = New-Object System.IO.FileStream $destName, "Create"
+            }
+            catch
+            {
+                #Should never happen since we own the cache directory
+                Throw-TerminatingError ($LocalizedData.CouldNotOpenDestFile -f $destName) $_
+            }
+
+            try
+            {
+                Trace-Message "Creating the $scheme stream"
+                $request = [System.Net.WebRequest]::Create($uri)
+                Trace-Message "Setting default credential"
+                $request.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+                if ($scheme -eq "http")
+                {
+                    Trace-Message "Setting authentication level"
+                    # default value is MutualAuthRequested, which applies to https scheme
+                    $request.AuthenticationLevel = [System.Net.Security.AuthenticationLevel]::None                            
+                }
+                if ($scheme -eq "https")
+                {
+                    Trace-Message "Ignoring bad certificates"
+                    $request.ServerCertificateValidationCallBack = {$true}
+                }
+                Trace-Message "Getting the $scheme response stream"
+                $responseStream = (([System.Net.HttpWebRequest]$request).GetResponse()).GetResponseStream()
+            }
+            catch
+            {
+                    Trace-Message ("Error: " + ($_ | Out-String))
+                    Throw-TerminatingError ($LocalizedData.CouldNotGetHttpStream -f $scheme, $Path) $_
+            }
+
+            try
+            {
+                Trace-Message "Copying the $scheme stream bytes to the disk cache"
+                $responseStream.CopyTo($outStream)
+                $responseStream.Flush()
+                $outStream.Flush()
+            }
+            catch
+            {
+                Throw-TerminatingError ($LocalizedData.ErrorCopyingDataToFile -f $Path,$destName) $_
+            }
+        }
+        finally
+        {
+            if($outStream)
+            {
+                $outStream.Close()
+            }
+            
+            if($responseStream)
+            {
+                $responseStream.Close()
+            }
+        }
+        Trace-Message "Setting a global var for downloaded package so that it's available to set-targetresource"
+        $Script:DownloadedPackage = $Destname
+        return $destname
+    }
 }
 
 
@@ -623,10 +750,20 @@ function Set-TargetResource
     )
     
     $ErrorActionPreference = "Stop"
-    
+    $PackageAlreadyDownloaded = $False
+    if (Get-Variable -scope Script -name DownloadedPackage -ErrorAction SilentlyContinue)
+    {
+        $Path = $Script:DownloadedPackage
+        $PackageAlreadyDownloaded = $True
+    }
     if ($null -eq $path)
     {
         Throw-TerminatingError "Parameter path missing" $_
+    }
+
+    if (Get-Variable -scope Script -name ProductCode -ErrorAction SilentlyContinue)
+    {
+        $ProductId = $Script:ProductCode
     }
 
     if((Test-TargetResource -Ensure $Ensure -Name $Name -Path $Path -ProductId $ProductId `
@@ -691,102 +828,15 @@ function Set-TargetResource
         #Download or mount file as necessary
         if(-not ($fileExtension -eq ".msi" -and $Ensure -eq "Absent"))
         {
-            if($uri.IsUnc -and $PSCmdlet.ShouldProcess($LocalizedData.MountSharePath, $null, $null))
+            if (($Uri.IsFile -eq $False) -and ($PackageAlreadyDownloaded -eq $False))
             {
-                $psdriveArgs = @{Name=([guid]::NewGuid());PSProvider="FileSystem";Root=(Split-Path $uri.LocalPath)}
-                if($Credential)
-                {
-                    #We need to optionally include these and then splat the hash otherwise
-                    #we pass a null for Credential which causes the cmdlet to pop a dialog up
-                    $psdriveArgs["Credential"] = $Credential
-                }
-                
-                $psdrive = New-PSDrive @psdriveArgs
-                $Path = Join-Path $psdrive.Root (Split-Path -Leaf $uri.LocalPath) #Necessary?
+                $Path = $downloadedFileName = Invoke-DownloadFile -uri $uri -Credential $Credential
             }
-            elseif(@("http", "https") -contains $uri.Scheme -and $Ensure -eq "Present" -and $PSCmdlet.ShouldProcess($LocalizedData.DownloadHTTPFile, $null, $null))
+            Elseif ($Uri.IsFile -eq $True)
             {
-                $scheme = $uri.Scheme
-                $outStream = $null
-                $responseStream = $null
-
-                try
-                {
-                    Trace-Message "Creating cache location"
-
-                    if(-not (Test-Path -PathType Container $CacheLocation))
-                    {
-                        mkdir $CacheLocation | Out-Null
-                    }
-                
-                    $destName = Join-Path $CacheLocation (Split-Path -Leaf $uri.LocalPath)
-                
-                    Trace-Message "Need to download file from $scheme, destination will be $destName"
-
-                    try
-                    {
-                        Trace-Message "Creating the destination cache file"
-                        $outStream = New-Object System.IO.FileStream $destName, "Create"
-                    }
-                    catch
-                    {
-                        #Should never happen since we own the cache directory
-                        Throw-TerminatingError ($LocalizedData.CouldNotOpenDestFile -f $destName) $_
-                    }
-
-                    try
-                    {
-                        Trace-Message "Creating the $scheme stream"
-                        $request = [System.Net.WebRequest]::Create($uri)
-                        Trace-Message "Setting default credential"
-                        $request.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-                        if ($scheme -eq "http")
-                        {
-                            Trace-Message "Setting authentication level"
-                            # default value is MutualAuthRequested, which applies to https scheme
-                            $request.AuthenticationLevel = [System.Net.Security.AuthenticationLevel]::None                            
-                        }
-                        if ($scheme -eq "https")
-                        {
-                            Trace-Message "Ignoring bad certificates"
-                            $request.ServerCertificateValidationCallBack = {$true}
-                        }
-                        Trace-Message "Getting the $scheme response stream"
-                        $responseStream = (([System.Net.HttpWebRequest]$request).GetResponse()).GetResponseStream()
-                    }
-                    catch
-                    {
-                         Trace-Message ("Error: " + ($_ | Out-String))
-                         Throw-TerminatingError ($LocalizedData.CouldNotGetHttpStream -f $scheme, $Path) $_
-                    }
-
-                    try
-                    {
-                        Trace-Message "Copying the $scheme stream bytes to the disk cache"
-                        $responseStream.CopyTo($outStream)
-                        $responseStream.Flush()
-                        $outStream.Flush()
-                    }
-                    catch
-                    {
-                        Throw-TerminatingError ($LocalizedData.ErrorCopyingDataToFile -f $Path,$destName) $_
-                    }
-                }
-                finally
-                {
-                    if($outStream)
-                    {
-                        $outStream.Close()
-                    }
-                    
-                    if($responseStream)
-                    {
-                        $responseStream.Close()
-                    }
-                }
-                Trace-Message "Redirecting package path to cache file location"
-                $Path = $downloadedFileName = $destName
+                #Package is already local, do nada
             }
+            
         }
         
         #At this point the Path ought to be valid unless it's an MSI uninstall case
@@ -1315,6 +1365,11 @@ if (($ensure -eq "present") -and ($null -eq $path))
     Fail-Json -obj $result -message 'parameter "path" is required when state is set to "present"'
 }
 
+if (($ensure -eq "absent") -and ("auto" -eq $productid) -and ($null -eq $path))
+{
+    Fail-Json -obj $result -message 'parameter "productid" is required and can not be set to "auto" when "path" is null and state is set to "absent"'
+}
+
 #Construct the DSC param hashtable
 $dscparams = @{
     name=$name
@@ -1351,6 +1406,16 @@ if ($testdscresult -eq $true)
 }
 Else
 {
+    #Check if the "invalidmsifile" has been set, exit if it has
+    if ($productid -eq "auto")
+    {
+        if (Get-Variable -scope Script -Name InvalidMsiFile)
+        {
+            fail-json -obj $result -message "Product Id was set to auto, but Ansible was unable to read the package product id automatically"
+        }
+    }
+
+
     try
     {
         set-TargetResource @dscparams
