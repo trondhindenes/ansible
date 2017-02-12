@@ -1,4 +1,4 @@
-### Windows Containers
+### Windows Containers and Ansible (experimental)
 
 This branch contains code that allow Ansible to remotely manage Windows Containers. In short, you need a hosts file looking something like this:
 
