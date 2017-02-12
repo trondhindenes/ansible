@@ -15,5 +15,5 @@ awsregular ansible_host=10.245.8.26 ansible_connection=winrm
 awscontainer ansible_host=10.245.8.26 ansible_connection=winrm_containers containerid=62fcc2dd1951862f562cba44b7830a7fac73eeb2b0d7192c58d3a467e902143f
 ```
 
-The two entries above control the same host, but the latter will proxy any ANsible command into the running container with the given id.
-Expect many of the current PowerShell-based Ansible modules to fail when run inside a Container!
+The two entries above control the same host, but the latter will proxy any Ansible command/module into the running container with the given id.
+Expect many of the current Powershell-based Ansible modules to fail when run inside a Container!
